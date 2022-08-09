@@ -1095,16 +1095,12 @@ static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t l
 	 */
 	BUG_ON(!after_bootmem);
 
-	if (!core_kernel_text((unsigned long)addr)) {
-		pages[0] = vmalloc_to_page(addr);
-		if (cross_page_boundary)
-			pages[1] = vmalloc_to_page(addr + PAGE_SIZE);
-	} else {
-		pages[0] = virt_to_page(addr);
-		WARN_ON(!PageReserved(pages[0]));
-		if (cross_page_boundary)
-			pages[1] = virt_to_page(addr + PAGE_SIZE);
-	}
+	// FIXME (kmviews): There was a faster code path for the core_kernel_text
+	//                  using virt_to_page. Removed due to kmviews.
+	pages[0] = vmalloc_to_page(addr);
+	if (cross_page_boundary)
+		pages[1] = vmalloc_to_page(addr + PAGE_SIZE);
+
 	/*
 	 * If something went wrong, crash and burn since recovery paths are not
 	 * implemented.
