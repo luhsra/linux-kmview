@@ -7,6 +7,7 @@
 #include <linux/cpumask.h>
 #include <linux/mman.h>
 #include <linux/pgtable.h>
+#include <linux/kmview.h>
 
 #include <linux/atomic.h>
 #include <linux/user_namespace.h>
@@ -30,6 +31,7 @@
 struct mm_struct init_mm = {
 	.mm_rb		= RB_ROOT,
 	.pgd		= swapper_pg_dir,
+	.kmview		= &init_kmview,
 	.mm_users	= ATOMIC_INIT(2),
 	.mm_count	= ATOMIC_INIT(1),
 	.write_protect_seq = SEQCNT_ZERO(init_mm.write_protect_seq),

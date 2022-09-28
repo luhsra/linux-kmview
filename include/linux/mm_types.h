@@ -504,6 +504,8 @@ struct mm_struct {
 		unsigned long highest_vm_end;	/* highest vma end address */
 		pgd_t * pgd;
 
+		struct kmview *kmview;
+
 #ifdef CONFIG_MEMBARRIER
 		/**
 		 * @membarrier_state: Flags controlling membarrier behavior.

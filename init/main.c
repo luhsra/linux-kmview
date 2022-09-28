@@ -100,6 +100,7 @@
 #include <linux/init_syscalls.h>
 #include <linux/stackdepot.h>
 #include <linux/randomize_kstack.h>
+#include <linux/kmview.h>
 #include <net/net_namespace.h>
 
 #include <asm/io.h>
@@ -853,6 +854,7 @@ static void __init mm_init(void)
 	init_espfix_bsp();
 	/* Should be run after espfix64 is set up. */
 	pti_init();
+	kmview_init();
 }
 
 #ifdef CONFIG_RANDOMIZE_KSTACK_OFFSET
