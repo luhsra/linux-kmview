@@ -859,6 +859,7 @@ struct task_struct {
 
 	struct mm_struct		*mm;
 	struct mm_struct		*active_mm;
+	struct kmview_pgd		*kmview_pgd;
 
 	/* Per-thread vma caching: */
 	struct vmacache			vmacache;

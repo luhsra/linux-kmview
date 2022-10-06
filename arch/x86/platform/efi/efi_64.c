@@ -464,13 +464,13 @@ void efi_enter_mm(void)
 {
 	efi_prev_mm = current->active_mm;
 	current->active_mm = &efi_mm;
-	switch_mm(efi_prev_mm, &efi_mm, NULL);
+	switch_mm(efi_prev_mm, &efi_mm, NULL, NULL, NULL);
 }
 
 void efi_leave_mm(void)
 {
 	current->active_mm = efi_prev_mm;
-	switch_mm(&efi_mm, efi_prev_mm, NULL);
+	switch_mm(&efi_mm, efi_prev_mm, NULL, current->kmview_pgd, NULL);
 }
 
 static DEFINE_SPINLOCK(efi_runtime_lock);

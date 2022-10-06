@@ -421,6 +421,18 @@ static inline void _pgd_free(pgd_t *pgd)
 }
 #endif /* CONFIG_X86_PAE */
 
+pgd_t *pgd_dup_kernel(struct mm_struct *mm) {
+	pgd_t *new = _pgd_alloc();
+	if (new == NULL)
+		goto out;
+
+	spin_lock(&pgd_lock);
+	pgd_ctor(mm, new); /* Copies kernel space */
+	spin_unlock(&pgd_lock);
+out:
+	return new;
+}
+
 pgd_t *pgd_alloc(struct mm_struct *mm)
 {
 	pgd_t *pgd;

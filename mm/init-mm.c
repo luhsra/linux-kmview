@@ -31,7 +31,7 @@
 struct mm_struct init_mm = {
 	.mm_rb		= RB_ROOT,
 	.pgd		= swapper_pg_dir,
-	.kmview		= &init_kmview,
+	.kmview_pgds	= LIST_HEAD_INIT(init_mm.kmview_pgds),
 	.mm_users	= ATOMIC_INIT(2),
 	.mm_count	= ATOMIC_INIT(1),
 	.write_protect_seq = SEQCNT_ZERO(init_mm.write_protect_seq),

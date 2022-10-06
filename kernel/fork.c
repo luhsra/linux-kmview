@@ -1109,7 +1109,7 @@ static void mm_init_uprobes_state(struct mm_struct *mm)
 }
 
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
-	struct user_namespace *user_ns)
+				 struct user_namespace *user_ns)
 {
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
@@ -1153,8 +1153,10 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	if (init_new_context(p, mm))
 		goto fail_nocontext;
 
+	if (kmview_mm_init(mm))
+		goto fail_nocontext;
+
 	mm->user_ns = get_user_ns(user_ns);
-	kmview_mm_init(mm);
 	return mm;
 
 fail_nocontext:
@@ -1567,8 +1569,12 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	 * We need to steal a active VM for that..
 	 */
 	oldmm = current->mm;
-	if (!oldmm)
+	if (!oldmm) {
+		// TODO (kmview): clone kmview_pgd
+		tsk->kmview_pgd = &init_kmview_pgd;
+		kmview_get(tsk->kmview_pgd->kmview);
 		return 0;
+	}
 
 	/* initialize the new vmacache entries */
 	vmacache_flush(tsk);
@@ -1584,6 +1590,14 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 
 	tsk->mm = mm;
 	tsk->active_mm = mm;
+	tsk->kmview_pgd = kmview_pgd_for_task(tsk, current->kmview_pgd->kmview);
+	if (!tsk->kmview_pgd) {
+		tsk->mm = NULL;
+		tsk->active_mm = NULL;
+		mmput(mm); /* FIXME (kmview): is this correct? */
+		return -ENOMEM;
+	}
+	kmview_get(tsk->kmview_pgd->kmview);
 	return 0;
 }
 

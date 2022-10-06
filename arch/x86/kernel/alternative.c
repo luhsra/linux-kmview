@@ -18,6 +18,7 @@
 #include <linux/mmu_context.h>
 #include <linux/bsearch.h>
 #include <linux/sync_core.h>
+#include <linux/kmview.h>
 #include <asm/text-patching.h>
 #include <asm/alternative.h>
 #include <asm/sections.h>
@@ -1030,7 +1031,7 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
 		leave_mm(smp_processor_id());
 
 	temp_state.mm = this_cpu_read(cpu_tlbstate.loaded_mm);
-	switch_mm_irqs_off(NULL, mm, current);
+	switch_mm_irqs_off(NULL, mm, current->kmview_pgd->kmview, NULL, current);
 
 	/*
 	 * If breakpoints are enabled, disable them while the temporary mm is
@@ -1052,7 +1053,8 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
 static inline void unuse_temporary_mm(temp_mm_state_t prev_state)
 {
 	lockdep_assert_irqs_disabled();
-	switch_mm_irqs_off(NULL, prev_state.mm, current);
+	// FIXME (kmview): prev_kmview causes a tlb flush in switch_mm_irqs_off
+	switch_mm_irqs_off(NULL, prev_state.mm, NULL, current->kmview_pgd, current);
 
 	/*
 	 * Restore the breakpoints if they were disabled before the temporary mm

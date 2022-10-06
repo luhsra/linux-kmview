@@ -12,6 +12,7 @@
 #include <linux/audit.h>
 #include <linux/numa.h>
 #include <linux/scs.h>
+#include <linux/kmview.h>
 
 #include <linux/uaccess.h>
 
@@ -85,6 +86,7 @@ struct task_struct init_task
 	.nr_cpus_allowed= NR_CPUS,
 	.mm		= NULL,
 	.active_mm	= &init_mm,
+	.kmview_pgd	= &init_kmview_pgd,
 	.restart_block	= {
 		.fn = do_no_restart_syscall,
 	},

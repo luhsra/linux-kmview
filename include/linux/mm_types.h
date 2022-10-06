@@ -504,7 +504,7 @@ struct mm_struct {
 		unsigned long highest_vm_end;	/* highest vma end address */
 		pgd_t * pgd;
 
-		struct kmview *kmview;
+		struct list_head kmview_pgds;
 
 #ifdef CONFIG_MEMBARRIER
 		/**

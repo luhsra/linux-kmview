@@ -6,6 +6,7 @@
 #include <linux/atomic.h>
 #include <linux/mm_types.h>
 #include <linux/pkeys.h>
+#include <linux/kmview.h>
 
 #include <trace/events/tlb.h>
 
@@ -126,16 +127,18 @@ static inline void destroy_context(struct mm_struct *mm)
 }
 
 extern void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+		      struct kmview *prev_kmview, struct kmview_pgd *next_kmview_pgd,
 		      struct task_struct *tsk);
 
 extern void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
+			       struct kmview *prev_kmview, struct kmview_pgd *next_kmview_pgd,
 			       struct task_struct *tsk);
 #define switch_mm_irqs_off switch_mm_irqs_off
 
-#define activate_mm(prev, next)			\
-do {						\
-	paravirt_activate_mm((prev), (next));	\
-	switch_mm((prev), (next), NULL);	\
+#define activate_mm(prev, next, prev_kmview, next_kmview_pgd)	\
+	do {							\
+	paravirt_activate_mm((prev), (next));			\
+	switch_mm((prev), (next), prev_kmview, next_kmview_pgd, NULL);	\
 } while (0);
 
 #ifdef CONFIG_X86_32

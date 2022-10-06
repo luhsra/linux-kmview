@@ -1,6 +1,7 @@
 #ifndef _KMVIEW_H
 #define _KMVIEW_H
 
+#include <linux/mm_types.h>
 #include <linux/list.h>
 #include <linux/atomic.h>
 #include <asm/pgtable_types.h>
@@ -20,14 +21,23 @@ struct kmview {
      pud_t *pud;
 };
 
+struct kmview_pgd {
+     /* The parent kmview of this instance */
+     struct kmview *kmview;
+
+     /* Connects all kmview_pgds of a mm */
+     struct list_head list;
+
+     /* The pgd of this kmview */
+     pgd_t *pgd;
+};
+
 extern struct kmview init_kmview;
+extern struct kmview_pgd init_kmview_pgd;
 
-void kmview_walk_pages(void);
 struct kmview *kmview_create(void);
-void kmview_switch(struct kmview *kmview);
-void kmview_switch_all(struct kmview *kmview);
 
-void kmview_mm_init(struct mm_struct *mm);
+int kmview_mm_init(struct mm_struct *mm);
 void kmview_mm_release(struct mm_struct *mm);
 
 void __init kmview_init(void);
@@ -38,6 +48,11 @@ static inline void kmview_get(struct kmview *kmview) {
 
 void kmview_put(struct kmview *mm);
 
-int kmview_test_function(int xy);
+struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
+				       struct kmview *kmview);
+
+static inline struct kmview_pgd *mm_first_kmview_pgd(struct mm_struct *mm) {
+     return list_first_entry(&mm->kmview_pgds, struct kmview_pgd, list);
+}
 
 #endif

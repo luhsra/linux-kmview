@@ -30,9 +30,15 @@ struct kmview init_kmview = {
 	.pud = NULL,
 };
 
+struct kmview_pgd init_kmview_pgd = {
+	.kmview = &init_kmview,
+	.list = LIST_HEAD_INIT(init_kmview_pgd.list),
+	.pgd = swapper_pg_dir,
+};
+
 static struct list_head kmview_list = LIST_HEAD_INIT(kmview_list);
 
-__cacheline_aligned DEFINE_RWLOCK(kmview_lock);
+__cacheline_aligned DEFINE_RWLOCK(kmview_list_lock);
 
 static pud_t *kmview_shallow_clone_range(unsigned long start)
 {
@@ -194,34 +200,22 @@ copy_pud_range(pud_t *pud, unsigned long addr, unsigned long end)
 	return 0;
 }
 
-/* Replace a single pud at addr. Return the old pud.
- * Must be called with text_mutex and with cpus_read_lock
- * Kernel tlb range must be flushed afterwards */
-static pud_t *replace_kernel_pud(struct mm_struct *mm, pud_t *new,
-				 unsigned long addr) {
+static pud_t *replace_kernel_pud(pgd_t *target_pgd, pud_t *new) {
+	unsigned long entry_start = TEXT_START & P4D_MASK;
 	pgd_t *pgd;
 	p4d_t *p4d;
 	pud_t *old_pud;
 
-	spin_lock(&mm->page_table_lock);
-
-	pgd = pgd_offset_pgd(mm->pgd, addr);
-	p4d = p4d_offset(pgd, addr);
+	pgd = pgd_offset_pgd(target_pgd, entry_start);
+	p4d = p4d_offset(pgd, entry_start);
 	// FIXME: Currently: Assume folded p4d -- only 4-level
-	old_pud = pud_offset(p4d, addr);
+	old_pud = pud_offset(p4d, entry_start);
 
 	/* p4d_populate(mm, p4d, new); */
-	WRITE_ONCE(*p4d, __p4d(_PAGE_TABLE | __pa(new)));  // intentionally no PTI, FIXME: pv?
+	WRITE_ONCE(*p4d, __p4d(_PAGE_TABLE | __pa(new)));
 
-	spin_unlock(&mm->page_table_lock);
 	return old_pud;
 }
-
-int kmview_test_function(int xy)
-{
-	return xy + 42;
-}
-EXPORT_SYMBOL_GPL(kmview_test_function);
 
 struct kmview *kmview_create(void)
 {
@@ -229,7 +223,7 @@ struct kmview *kmview_create(void)
 	struct kmview *new;
 
 	// FIXME
-	atomic_t curr_id = ATOMIC_INIT(0);
+	static atomic_t curr_id = ATOMIC_INIT(0);
 
 	// FIXME Needs CONFIG_PGTABLE_LEVELS >= 4  (64 bit AS)
 	BUG_ON(CONFIG_PGTABLE_LEVELS < 4);
@@ -237,7 +231,6 @@ struct kmview *kmview_create(void)
 
 	new = kmalloc(sizeof(struct kmview), GFP_KERNEL);
 
-	cpus_read_lock();
 	mutex_lock(&text_mutex);
 
 	new->pud = kmview_shallow_clone_range(TEXT_START & P4D_MASK);
@@ -247,133 +240,89 @@ struct kmview *kmview_create(void)
 		goto error_unlock;
 
 	mutex_unlock(&text_mutex);
-	cpus_read_unlock();
 
 	new->id = atomic_inc_return(&curr_id);
 	atomic_set(&new->users, 1);
 
-	write_lock(&kmview_lock);
+	write_lock(&kmview_list_lock);
 	list_add_tail(&new->list, &kmview_list);
-	write_unlock(&kmview_lock);
+	write_unlock(&kmview_list_lock);
 
 	return new;
 error_unlock:
 	mutex_unlock(&text_mutex);
-	cpus_read_unlock();
 	kfree(new);
 	return ERR_PTR(error);
 }
-EXPORT_SYMBOL_GPL(kmview_create);
 
-void kmview_switch(struct kmview *kmview) {
-	struct kmview *old_kmview;
-	unsigned long entry_start = TEXT_START & P4D_MASK;
-	unsigned long entry_end = entry_start + (P4D_SIZE - 1);
-	struct mm_struct *mm = current->mm;
+struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
+				       struct kmview *kmview) {
+	struct mm_struct *mm = task->mm;
+	struct kmview_pgd *kmview_pgd;
 
-	cpus_read_lock();
-	mutex_lock(&text_mutex);
-	mmap_write_lock(mm);
-	if (mm->kmview == kmview) {
-		mmap_write_unlock(mm);
-		mutex_unlock(&text_mutex);
-		cpus_read_unlock();
-		return;
+	// Check if kmview_pgd for this already exists
+	list_for_each_entry(kmview_pgd, &mm->kmview_pgds, list) {
+		if (kmview_pgd->kmview == kmview)
+			break;
 	}
-	kmview_get(kmview);
-	old_kmview = mm->kmview;
-	mm->kmview = kmview;
 
-	replace_kernel_pud(mm, kmview->pud, entry_start);
+	if (list_entry_is_head(kmview_pgd, &mm->kmview_pgds, list)) {
+		// Found no suitable kmview_pgd -> make a new one
+		kmview_pgd = kmalloc(sizeof(struct kmview_pgd), GFP_KERNEL);
+		if (unlikely(!kmview_pgd))
+			return NULL;
 
-	mmap_write_unlock(mm);
-	mutex_unlock(&text_mutex);
-	cpus_read_unlock();
+		kmview_pgd->kmview = kmview;
 
-	kmview_put(old_kmview);
-
-	// FIXME: only flush cpus with this mm
-	// ... on_each_cpu_mask(mm_cpumask(mm), ..., info, 1);
-	flush_tlb_kernel_range(entry_start, entry_end);
-}
-EXPORT_SYMBOL_GPL(kmview_switch);
-
-void kmview_switch_all(struct kmview *kmview) {
-	struct task_struct *proc;
-	unsigned long entry_start = TEXT_START & P4D_MASK;
-	unsigned long entry_end = entry_start + (P4D_SIZE - 1);
-
-	// TODO dec users, inc users (in replace_kernel_pud)
-	cpus_read_lock();
-	mutex_lock(&text_mutex);
-	read_lock(&tasklist_lock);
-
-	/* mmap_write_lock(&init_mm); */
-	if (init_mm.kmview != kmview) {
-		struct kmview *old_kmview;
-		kmview_get(kmview);
-		old_kmview = init_mm.kmview;
-		init_mm.kmview = kmview;
-		replace_kernel_pud(&init_mm, kmview->pud, entry_start);
-		/* _replace_kernel_pud(poking_mm, kmview->pud, entry_start); */
-		kmview_put(old_kmview);
-	}
-	/* mmap_write_unlock(&init_mm); */
-
-	for_each_process(proc) {
-		struct kmview *old_kmview;
-		struct mm_struct *mm = proc->mm;
-		if (proc->flags & PF_KTHREAD)
-			continue;
-		if (proc->group_leader != proc)
-			continue;
-		BUG_ON(!mm);
-		/* mmap_write_lock(mm); */
-		if (mm->kmview == kmview) {
-			/* mmap_write_unlock(mm); */
-			continue;
+		/* Get a new pgd with the kernelspace already cloned */
+		kmview_pgd->pgd = pgd_dup_kernel(mm);
+		if (unlikely(!kmview_pgd->pgd)) {
+			kfree(kmview_pgd);
+			return NULL;
 		}
-		kmview_get(kmview);
-		old_kmview = mm->kmview;
-		mm->kmview = kmview;
-		replace_kernel_pud(mm, kmview->pud, entry_start);
-		/* mmap_write_unlock(mm); */
-		kmview_put(old_kmview);
+
+		/* Clone userspace entries and add it to the kmview_pgd list */
+		spin_lock(&mm->page_table_lock);
+		/* FIXME: This works only for x86_64 at the moment (most likely) */
+		clone_pgd_range(kmview_pgd->pgd, mm->pgd,
+				KERNEL_PGD_BOUNDARY);
+		list_add_tail(&kmview_pgd->list, &mm->kmview_pgds);
+		spin_unlock(&mm->page_table_lock);
+
+		replace_kernel_pud(kmview_pgd->pgd, kmview->pud);
 	}
 
-	read_unlock(&tasklist_lock);
-	mutex_unlock(&text_mutex);
-	cpus_read_unlock();
-
-	flush_tlb_kernel_range(entry_start, entry_end);
+	return kmview_pgd;
 }
-EXPORT_SYMBOL_GPL(kmview_switch_all);
 
-void kmview_mm_init(struct mm_struct *mm) {
-	struct kmview *kmview;
+int kmview_mm_init(struct mm_struct *mm) {
+	struct kmview_pgd *kmview_pgd;
 	pgd_t *pgd;
 	p4d_t *p4d;
 	pud_t *pud;
 
-	// FIXME: kernel text is copied in
-	// mm_init->mm_alloc_pgd->pgd_alloc->pgd_ctor
-	// but this seems not to be protected...
-	mmap_read_lock(&init_mm);
-	kmview = init_mm.kmview;
-	kmview_get(kmview);
+	kmview_pgd = kmalloc(sizeof(struct kmview_pgd), GFP_KERNEL);
+	if (unlikely(!kmview_pgd))
+		return -ENOMEM;
 
 	pgd = pgd_offset_pgd(mm->pgd, TEXT_START & P4D_MASK);
 	p4d = p4d_offset(pgd, TEXT_START & P4D_MASK);
 	pud = pud_offset(p4d, TEXT_START & P4D_MASK);
-	/* kmview->pud gets set in init_ */
-	BUG_ON(kmview->pud && kmview->pud != pud);
-
-	mm->kmview = kmview;
-	mmap_read_unlock(&init_mm);
+	BUG_ON(init_kmview.pud != pud);
+	kmview_pgd->kmview = &init_kmview;
+	kmview_pgd->pgd = mm->pgd;
+	INIT_LIST_HEAD(&mm->kmview_pgds);
+	list_add_tail(&kmview_pgd->list, &mm->kmview_pgds);
+	return 0;
 }
 
 void kmview_mm_release(struct mm_struct *mm) {
-	kmview_put(mm->kmview);
+	struct kmview_pgd *kmview_pgd, *tmp;
+
+	list_for_each_entry_safe(kmview_pgd, tmp, &mm->kmview_pgds, list) {
+		list_del(&kmview_pgd->list);
+		kfree(kmview_pgd);
+	}
 }
 
 void __init kmview_init(void) {
@@ -384,17 +333,49 @@ void __init kmview_init(void) {
 	kmview_get(&init_kmview);
 	init_kmview.pud = pud;
 	list_add_tail(&init_kmview.list, &kmview_list);
+	list_add_tail(&init_kmview_pgd.list, &init_mm.kmview_pgds);
+	/* init_kmview_pgd.pgd = init_mm.pgd; */
 }
 
 void kmview_put(struct kmview *kmview)
 {
 	if (atomic_dec_and_test(&kmview->users)) {
-		write_lock(&kmview_lock);
+		write_lock(&kmview_list_lock);
 		list_del(&kmview->list);
-		write_unlock(&kmview_lock);
+		write_unlock(&kmview_list_lock);
 		// TODO: free the pud
 		kfree(kmview);
 	}
+}
+
+/* The kmview must not be used anywhere! */
+static void patch_something(struct kmview *kmview) {
+	extern char ksys_write; /* this is the thing to patch */
+
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *ptep, pte;
+	struct page *page;
+	char *page_addr;
+	unsigned long addr = (unsigned long)(&ksys_write);
+
+	pud = kmview->pud + pud_index(addr);
+	pmd = pmd_offset(pud, addr);
+	BUG_ON(pmd_none(*pmd));
+	if (pmd_leaf(*pmd)) {
+		page = pmd_page(*pmd) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
+	} else {
+		ptep = pte_offset_map(pmd, addr);
+		pte = *ptep;
+		BUG_ON(!pte_present(pte));
+		page = pte_page(pte);
+		pte_unmap(ptep);
+	}
+	page_addr = page_address(page);
+
+	mutex_lock(&text_mutex);
+	page_addr[addr & ~PAGE_MASK] = 0xcc; /* Write int3 */
+	mutex_unlock(&text_mutex);
 }
 
 static struct proc_dir_entry* kmview_stats_file;
@@ -404,12 +385,12 @@ static int kmview_stats_show(struct seq_file *m, void *v)
 	struct task_struct *proc;
 	struct kmview *item;
 
-	read_lock(&kmview_lock);
+	read_lock(&kmview_list_lock);
 	read_lock(&tasklist_lock);
 
 	seq_printf(m, "kmviews:\n");
-	item = &init_kmview;
-	list_for_each_entry_from(item, &kmview_list, list) {
+	BUG_ON(list_empty(&kmview_list));
+	list_for_each_entry(item, &kmview_list, list) {
 		seq_printf(m, "\t%lu\tusers:%lu\n",
 			   item->id, atomic_read(&item->users));
 	}
@@ -417,15 +398,13 @@ static int kmview_stats_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "tasks:\n");
 	for_each_process(proc) {
-		seq_printf(m, "\t%lu\tmm: %p", proc->pid, proc->mm);
-		if (proc->mm)
-			seq_printf(m, "\t kmview: %lu\n", proc->mm->kmview->id);
-		else
-			seq_printf(m, "\t kmview: n/a\n");
+		seq_printf(m, "\t%lu\tmm: %p\tkmview: %lu\n",
+			   proc->pid, proc->mm,
+			   proc->kmview_pgd->kmview->id);
 	}
 
 	read_unlock(&tasklist_lock);
-	read_unlock(&kmview_lock);
+	read_unlock(&kmview_list_lock);
 
 	return 0;
 }
@@ -452,14 +431,50 @@ subsys_initcall(kmview_stats_init);
 static struct proc_dir_entry* kmview_switch_pid_file;
 
 static ssize_t kmview_switch_pid_write(struct file *file, const char __user *buf,
-				   size_t count, loff_t *ppos)
+				       size_t count, loff_t *ppos)
 {
 	pid_t pid;
+	struct kmview *kmview, *old_kmview;
+	struct kmview_pgd *kmview_pgd;
+	struct task_struct *task;
+
 	long ret = kstrtoint_from_user(buf, count, 10, &pid);
 	if (ret != 0)
 		return ret;
 
-	printk(KERN_INFO "kmview: switch pid: %d\n", pid);
+	/* Create a new kmview */
+	kmview = kmview_create();
+	if (!kmview)
+		return -ENOMEM;
+
+	/* patch_something(kmview); */
+
+	/* Get the task by pid */
+	rcu_read_lock();
+	task = find_task_by_vpid(pid);
+	if (!task) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
+	get_task_struct(task);
+	rcu_read_unlock();
+
+	kmview_get(kmview);
+
+	/* Set the task's kmview to the newly created kmview.
+	   It will be used after a context switch. */
+	kmview_pgd = kmview_pgd_for_task(task, kmview);
+	if (!kmview_pgd) {
+		put_task_struct(task);
+		return -ENOMEM;
+	}
+	old_kmview = task->kmview_pgd->kmview;
+	task->kmview_pgd = kmview_pgd;
+	kmview_put(old_kmview);
+
+	put_task_struct(task);
+
+	printk(KERN_INFO "kmview: switch thread:%d to kmview:%lu\n", pid, kmview->id);
 
 	return count;
 }

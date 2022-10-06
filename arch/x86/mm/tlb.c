@@ -10,6 +10,7 @@
 #include <linux/debugfs.h>
 #include <linux/sched/smt.h>
 #include <linux/task_work.h>
+#include <linux/kmview.h>
 
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
@@ -311,17 +312,19 @@ void leave_mm(int cpu)
 	/* Warn if we're not lazy. */
 	WARN_ON(!this_cpu_read(cpu_tlbstate_shared.is_lazy));
 
-	switch_mm(NULL, &init_mm, NULL);
+	// FIXME (kmview)
+	switch_mm(NULL, &init_mm, NULL, NULL, NULL);
 }
 EXPORT_SYMBOL_GPL(leave_mm);
 
 void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+	       struct kmview *prev_kmview, struct kmview_pgd *next_kmview_pgd,
 	       struct task_struct *tsk)
 {
 	unsigned long flags;
 
 	local_irq_save(flags);
-	switch_mm_irqs_off(prev, next, tsk);
+	switch_mm_irqs_off(prev, next, prev_kmview, next_kmview_pgd, tsk);
 	local_irq_restore(flags);
 }
 
@@ -487,6 +490,7 @@ static inline void cr4_update_pce_mm(struct mm_struct *mm) { }
 #endif
 
 void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
+			struct kmview *prev_kmview, struct kmview_pgd *next_kmview_pgd,
 			struct task_struct *tsk)
 {
 	struct mm_struct *real_prev = this_cpu_read(cpu_tlbstate.loaded_mm);
@@ -496,6 +500,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	u64 next_tlb_gen;
 	bool need_flush;
 	u16 new_asid;
+	pgd_t *pgd;
 
 	/*
 	 * NB: The scheduler will call us with prev == next when switching
@@ -520,6 +525,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	 * isn't free.
 	 */
 #ifdef CONFIG_DEBUG_VM
+	BUG(); // FIXME: (kmview) Currently not supported
 	if (WARN_ON_ONCE(__read_cr3() != build_cr3(real_prev->pgd, prev_asid))) {
 		/*
 		 * If we were to BUG here, we'd be very likely to kill
@@ -622,15 +628,25 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		barrier();
 	}
 
+	if (next_kmview_pgd) {
+		if (prev_kmview != next_kmview_pgd->kmview)
+			need_flush = true; // FIXME (kmview): do not always flush?
+
+		pgd = next_kmview_pgd->pgd;
+	} else {
+		need_flush = true; // FIXME (kmview): do not always flush?
+		pgd = next->pgd;
+	}
+
 	if (need_flush) {
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
-		load_new_mm_cr3(next->pgd, new_asid, true);
+		load_new_mm_cr3(pgd, new_asid, true);
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 	} else {
 		/* The new ASID is already up to date. */
-		load_new_mm_cr3(next->pgd, new_asid, false);
+		load_new_mm_cr3(pgd, new_asid, false);
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, 0);
 	}
@@ -767,7 +783,8 @@ static void flush_tlb_func(void *info)
 		 * This should be rare, with native_flush_tlb_multi() skipping
 		 * IPIs to lazy TLB mode CPUs.
 		 */
-		switch_mm_irqs_off(NULL, &init_mm, NULL);
+		// FIXME (kmview): ^ Is this still the case with kmviews?
+		switch_mm_irqs_off(NULL, &init_mm, NULL, NULL, NULL);
 		return;
 	}
 
