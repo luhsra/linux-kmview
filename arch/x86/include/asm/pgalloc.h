@@ -50,6 +50,7 @@ extern gfp_t __userpte_alloc_gfp;
  */
 extern pgd_t *pgd_alloc(struct mm_struct *);
 extern void pgd_free(struct mm_struct *mm, pgd_t *pgd);
+extern void kmview_pgd_pgd_free(pgd_t *pgd);
 
 extern pgd_t *pgd_dup_kernel(struct mm_struct *mm);
 

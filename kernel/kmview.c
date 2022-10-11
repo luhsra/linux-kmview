@@ -328,6 +328,8 @@ void kmview_mm_release(struct mm_struct *mm) {
 	struct kmview_pgd *kmview_pgd, *tmp;
 
 	list_for_each_entry_safe(kmview_pgd, tmp, &mm->kmview_pgds, list) {
+		if (kmview_pgd->pgd != mm->pgd)
+			kmview_pgd_pgd_free(kmview_pgd->pgd);
 		list_del(&kmview_pgd->list);
 		kfree(kmview_pgd);
 	}

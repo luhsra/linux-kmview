@@ -2,6 +2,7 @@
 #include <linux/mm.h>
 #include <linux/gfp.h>
 #include <linux/hugetlb.h>
+#include <linux/kmview.h>
 #include <asm/pgalloc.h>
 #include <asm/tlb.h>
 #include <asm/fixmap.h>
@@ -478,6 +479,12 @@ out_free_pgd:
 	_pgd_free(pgd);
 out:
 	return NULL;
+}
+
+void kmview_pgd_pgd_free(pgd_t *pgd) {
+	pgd_dtor(pgd);
+	/* paravirt_pgd_free(mm, pgd); FIXME (kmview) */
+	_pgd_free(pgd);
 }
 
 void pgd_free(struct mm_struct *mm, pgd_t *pgd)
