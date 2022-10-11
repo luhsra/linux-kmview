@@ -7,6 +7,7 @@
 #include <linux/swapops.h>
 #include <linux/kmemleak.h>
 #include <linux/sched/task.h>
+#include <linux/kmview.h>
 
 #include <asm/set_memory.h>
 #include <asm/e820/api.h>
@@ -1040,6 +1041,7 @@ void __init zone_sizes_init(void)
 
 __visible DEFINE_PER_CPU_ALIGNED(struct tlb_state, cpu_tlbstate) = {
 	.loaded_mm = &init_mm,
+	.loaded_kmview_pgd = &init_kmview_pgd,
 	.next_asid = 1,
 	.cr4 = ~0UL,	/* fail hard if we screw up cr4 shadow initialization */
 };

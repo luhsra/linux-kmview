@@ -78,6 +78,7 @@ struct tlb_state {
 	 * is for nmi_uaccess_okay()'s benefit.
 	 */
 	struct mm_struct *loaded_mm;
+	struct kmview_pgd *loaded_kmview_pgd;
 
 #define LOADED_MM_SWITCHING ((struct mm_struct *)1UL)
 
