@@ -36,7 +36,8 @@ struct kmview_pgd init_kmview_pgd = {
 	.pgd = swapper_pg_dir,
 };
 
-static struct list_head kmview_list = LIST_HEAD_INIT(kmview_list);
+/* List of all kmviews, */
+struct list_head kmview_list = LIST_HEAD_INIT(kmview_list);
 
 __cacheline_aligned DEFINE_RWLOCK(kmview_list_lock);
 
@@ -239,14 +240,18 @@ struct kmview *kmview_create(void)
 	if (error)
 		goto error_unlock;
 
-	mutex_unlock(&text_mutex);
-
 	new->id = atomic_inc_return(&curr_id);
 	atomic_set(&new->users, 1);
 
 	write_lock(&kmview_list_lock);
 	list_add_tail(&new->list, &kmview_list);
 	write_unlock(&kmview_list_lock);
+
+	/* Make a kmview_pgd for poking_mm for the newely created kmview.
+	   We cannot do this on demand in __text_poke. */
+	mm_get_kmview_pgd(poking_mm, new);
+
+	mutex_unlock(&text_mutex);
 
 	return new;
 error_unlock:
@@ -255,10 +260,11 @@ error_unlock:
 	return ERR_PTR(error);
 }
 
-struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
-				       struct kmview *kmview) {
-	struct mm_struct *mm = task->mm;
-	struct kmview_pgd *kmview_pgd;
+struct kmview_pgd *mm_get_kmview_pgd(struct mm_struct *mm,
+				     struct kmview *kmview) {
+	struct kmview_pgd *kmview_pgd = NULL;
+
+	mmap_write_lock(mm);
 
 	// Check if kmview_pgd for this already exists
 	list_for_each_entry(kmview_pgd, &mm->kmview_pgds, list) {
@@ -270,7 +276,7 @@ struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
 		// Found no suitable kmview_pgd -> make a new one
 		kmview_pgd = kmalloc(sizeof(struct kmview_pgd), GFP_KERNEL);
 		if (unlikely(!kmview_pgd))
-			return NULL;
+			goto out;
 
 		kmview_pgd->kmview = kmview;
 
@@ -278,7 +284,7 @@ struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
 		kmview_pgd->pgd = pgd_dup_kernel(mm);
 		if (unlikely(!kmview_pgd->pgd)) {
 			kfree(kmview_pgd);
-			return NULL;
+			goto out;
 		}
 
 		/* Clone userspace entries and add it to the kmview_pgd list */
@@ -292,6 +298,8 @@ struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
 		replace_kernel_pud(kmview_pgd->pgd, kmview->pud);
 	}
 
+out:
+	mmap_write_unlock(mm);
 	return kmview_pgd;
 }
 
@@ -346,6 +354,47 @@ void kmview_put(struct kmview *kmview)
 		// TODO: free the pud
 		kfree(kmview);
 	}
+}
+
+/* This is the kmview version of vmalloc_to_page */
+struct page *kmview_vmalloc_to_page(struct kmview *kmview,
+				    const void *vmalloc_addr)
+{
+	unsigned long addr = (unsigned long) vmalloc_addr;
+	struct page *page = NULL;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *ptep, pte;
+
+	/*
+	 * XXX we might need to change this if we add VIRTUAL_BUG_ON for
+	 * architectures that do not vmalloc module space
+	 */
+	VIRTUAL_BUG_ON(!is_vmalloc_or_module_addr(vmalloc_addr));
+
+	pud = kmview->pud + pud_index(addr);
+	if (pud_none(*pud))
+		return NULL;
+	if (pud_leaf(*pud))
+		return pud_page(*pud) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
+	if (WARN_ON_ONCE(pud_bad(*pud)))
+		return NULL;
+
+	pmd = pmd_offset(pud, addr);
+	if (pmd_none(*pmd))
+		return NULL;
+	if (pmd_leaf(*pmd))
+		return pmd_page(*pmd) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
+	if (WARN_ON_ONCE(pmd_bad(*pmd)))
+		return NULL;
+
+	ptep = pte_offset_map(pmd, addr);
+	pte = *ptep;
+	if (pte_present(pte))
+		page = pte_page(pte);
+	pte_unmap(ptep);
+
+	return page;
 }
 
 /* The kmview must not be used anywhere! */
@@ -463,7 +512,7 @@ static ssize_t kmview_switch_pid_write(struct file *file, const char __user *buf
 
 	/* Set the task's kmview to the newly created kmview.
 	   It will be used after a context switch. */
-	kmview_pgd = kmview_pgd_for_task(task, kmview);
+	kmview_pgd = mm_get_kmview_pgd(task->mm, kmview);
 	if (!kmview_pgd) {
 		put_task_struct(task);
 		return -ENOMEM;

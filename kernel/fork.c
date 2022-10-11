@@ -1588,16 +1588,14 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 			return -ENOMEM;
 	}
 
-	tsk->mm = mm;
-	tsk->active_mm = mm;
-	tsk->kmview_pgd = kmview_pgd_for_task(tsk, current->kmview_pgd->kmview);
+	tsk->kmview_pgd = mm_get_kmview_pgd(mm, current->kmview_pgd->kmview);
 	if (!tsk->kmview_pgd) {
-		tsk->mm = NULL;
-		tsk->active_mm = NULL;
 		mmput(mm); /* FIXME (kmview): is this correct? */
 		return -ENOMEM;
 	}
 	kmview_get(tsk->kmview_pgd->kmview);
+	tsk->mm = mm;
+	tsk->active_mm = mm;
 	return 0;
 }
 

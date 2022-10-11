@@ -1014,7 +1014,8 @@ static int exec_mmap(struct mm_struct *mm)
 	active_mm = tsk->active_mm;
 	tsk->active_mm = mm;
 	tsk->mm = mm;
-	tsk->kmview_pgd = mm_first_kmview_pgd(mm);
+	tsk->kmview_pgd = list_first_entry(&mm->kmview_pgds,
+					   struct kmview_pgd, list);
 	/*
 	 * This prevents preemption while active_mm is being loaded and
 	 * it and mm are being updated, which could cause problems for

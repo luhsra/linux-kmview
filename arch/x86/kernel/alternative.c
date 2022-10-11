@@ -1001,6 +1001,8 @@ void __init_or_module text_poke_early(void *addr, const void *opcode,
 
 typedef struct {
 	struct mm_struct *mm;
+	struct kmview_pgd *this_kmview_pgd;
+	struct kmview_pgd *prev_kmview_pgd;
 } temp_mm_state_t;
 
 /*
@@ -1016,7 +1018,8 @@ typedef struct {
  *          loaded, thereby preventing interrupt handler bugs from overriding
  *          the kernel memory protection.
  */
-static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
+static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm,
+					       struct kmview_pgd *kmview_pgd)
 {
 	temp_mm_state_t temp_state;
 
@@ -1031,7 +1034,9 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
 		leave_mm(smp_processor_id());
 
 	temp_state.mm = this_cpu_read(cpu_tlbstate.loaded_mm);
-	switch_mm_irqs_off(NULL, mm, current->kmview_pgd->kmview, NULL, current);
+	temp_state.this_kmview_pgd = kmview_pgd;
+	temp_state.prev_kmview_pgd = current->kmview_pgd;
+	switch_mm_irqs_off(NULL, mm, current->kmview_pgd->kmview, kmview_pgd, current);
 
 	/*
 	 * If breakpoints are enabled, disable them while the temporary mm is
@@ -1054,7 +1059,8 @@ static inline void unuse_temporary_mm(temp_mm_state_t prev_state)
 {
 	lockdep_assert_irqs_disabled();
 	// FIXME (kmview): prev_kmview causes a tlb flush in switch_mm_irqs_off
-	switch_mm_irqs_off(NULL, prev_state.mm, NULL, current->kmview_pgd, current);
+	switch_mm_irqs_off(NULL, prev_state.mm, prev_state.this_kmview_pgd->kmview,
+			   prev_state.prev_kmview_pgd, current);
 
 	/*
 	 * Restore the breakpoints if they were disabled before the temporary mm
@@ -1081,7 +1087,8 @@ static void text_poke_memset(void *dst, const void *src, size_t len)
 
 typedef void text_poke_f(void *dst, const void *src, size_t len);
 
-static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t len)
+static void *__text_poke_kmview(struct kmview *kmview, text_poke_f func,
+				void *addr, const void *src, size_t len)
 {
 	bool cross_page_boundary = offset_in_page(addr) + len > PAGE_SIZE;
 	struct page *pages[2] = {NULL};
@@ -1090,6 +1097,7 @@ static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t l
 	pte_t pte, *ptep;
 	spinlock_t *ptl;
 	pgprot_t pgprot;
+	struct kmview_pgd *kmview_pgd;
 
 	/*
 	 * While boot memory allocator is running we cannot use struct pages as
@@ -1097,11 +1105,20 @@ static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t l
 	 */
 	BUG_ON(!after_bootmem);
 
-	// FIXME (kmviews): There was a faster code path for the core_kernel_text
-	//                  using virt_to_page. Removed due to kmviews.
-	pages[0] = vmalloc_to_page(addr);
+	/*
+	 * The kmview_pgds for poking_mm gets pre-created in kmview_create,
+	 * as it cannot be allocated here.
+	 * No need to mmap_read_lock; we are the only one operating on poking_mm.
+	 */
+	list_for_each_entry(kmview_pgd, &poking_mm->kmview_pgds, list) {
+		if (kmview_pgd->kmview == kmview)
+			break;
+	}
+	BUG_ON(list_entry_is_head(kmview_pgd, &poking_mm->kmview_pgds, list));
+
+	pages[0] = kmview_vmalloc_to_page(kmview, addr);
 	if (cross_page_boundary)
-		pages[1] = vmalloc_to_page(addr + PAGE_SIZE);
+		pages[1] = kmview_vmalloc_to_page(kmview, addr + PAGE_SIZE);
 
 	/*
 	 * If something went wrong, crash and burn since recovery paths are not
@@ -1139,7 +1156,7 @@ static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t l
 	 * Loading the temporary mm behaves as a compiler barrier, which
 	 * guarantees that the PTE will be set at the time memcpy() is done.
 	 */
-	prev = use_temporary_mm(poking_mm);
+	prev = use_temporary_mm(poking_mm, kmview_pgd);
 
 	kasan_disable_current();
 	func((u8 *)poking_addr + offset_in_page(addr), src, len);
@@ -1180,6 +1197,17 @@ static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t l
 
 	local_irq_restore(flags);
 	pte_unmap_unlock(ptep, ptl);
+	return addr;
+}
+
+static void *__text_poke(text_poke_f func, void *addr, const void *src, size_t len)
+{
+	struct kmview *item;
+	read_lock(&kmview_list_lock);
+	list_for_each_entry(item, &kmview_list, list) {
+		__text_poke_kmview(item, func, addr, src, len);
+	}
+	read_unlock(&kmview_list_lock);
 	return addr;
 }
 

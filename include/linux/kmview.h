@@ -2,6 +2,7 @@
 #define _KMVIEW_H
 
 #include <linux/mm_types.h>
+#include <linux/mmap_lock.h>
 #include <linux/list.h>
 #include <linux/atomic.h>
 #include <asm/pgtable_types.h>
@@ -32,6 +33,9 @@ struct kmview_pgd {
      pgd_t *pgd;
 };
 
+extern struct list_head kmview_list;
+extern rwlock_t kmview_list_lock;
+
 extern struct kmview init_kmview;
 extern struct kmview_pgd init_kmview_pgd;
 
@@ -48,11 +52,10 @@ static inline void kmview_get(struct kmview *kmview) {
 
 void kmview_put(struct kmview *mm);
 
-struct kmview_pgd *kmview_pgd_for_task(struct task_struct *task,
-				       struct kmview *kmview);
+struct kmview_pgd *mm_get_kmview_pgd(struct mm_struct *mm,
+				     struct kmview *kmview);
 
-static inline struct kmview_pgd *mm_first_kmview_pgd(struct mm_struct *mm) {
-     return list_first_entry(&mm->kmview_pgds, struct kmview_pgd, list);
-}
+struct page *kmview_vmalloc_to_page(struct kmview *kmview,
+				    const void *vmalloc_addr);
 
 #endif
