@@ -653,9 +653,11 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
 		load_new_mm_cr3(pgd, new_asid, true);
 
-		if (full_flush) {
-			do_flush_tlb_all(NULL);
-		}
+		/* NOTE: We do not need to do the full flush when
+		   pti_clone_kernel_text is not executed. */
+		/* if (full_flush) { */
+		/* 	do_flush_tlb_all(NULL); */
+		/* } */
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 	} else {
