@@ -107,6 +107,8 @@
  */
 #define MAX_ASID_AVAILABLE ((1 << CR3_AVAIL_PCID_BITS) - 2)
 
+static void do_flush_tlb_all(void *info);
+
 /*
  * Given @asid, compute kPCID
  */
@@ -499,8 +501,10 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	unsigned cpu = smp_processor_id();
 	u64 next_tlb_gen;
 	bool need_flush;
+	bool full_flush = false;
 	u16 new_asid;
 	pgd_t *pgd;
+	bool kmview_switch = false;
 
 	/*
 	 * NB: The scheduler will call us with prev == next when switching
@@ -545,6 +549,11 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	if (was_lazy)
 		this_cpu_write(cpu_tlbstate_shared.is_lazy, false);
 
+	if (!next_kmview_pgd || prev_kmview != next_kmview_pgd->kmview) {
+		kmview_switch = true;
+		full_flush = true;
+	}
+
 	/*
 	 * The membarrier system call requires a full memory barrier and
 	 * core serialization before returning to user-space, after
@@ -575,7 +584,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		 * from one thread in a process to another thread in the same
 		 * process. No TLB flush required.
 		 */
-		if (!was_lazy)
+		if (!was_lazy && !kmview_switch)
 			return;
 
 		/*
@@ -587,7 +596,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		smp_mb();
 		next_tlb_gen = atomic64_read(&next->context.tlb_gen);
 		if (this_cpu_read(cpu_tlbstate.ctxs[prev_asid].tlb_gen) ==
-				next_tlb_gen)
+				next_tlb_gen && !kmview_switch)
 			return;
 
 		/*
@@ -629,12 +638,13 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 	}
 
 	if (next_kmview_pgd) {
-		if (prev_kmview != next_kmview_pgd->kmview)
+		if (kmview_switch)
 			need_flush = true; // FIXME (kmview): do not always flush?
 
 		pgd = next_kmview_pgd->pgd;
 	} else {
 		need_flush = true; // FIXME (kmview): do not always flush?
+		full_flush = true;
 		pgd = next->pgd;
 	}
 
@@ -642,6 +652,10 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].ctx_id, next->context.ctx_id);
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
 		load_new_mm_cr3(pgd, new_asid, true);
+
+		if (full_flush) {
+			do_flush_tlb_all(NULL);
+		}
 
 		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 	} else {
