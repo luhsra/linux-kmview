@@ -432,7 +432,7 @@ static struct proc_dir_entry* kmview_stats_file;
 
 static int kmview_stats_show(struct seq_file *m, void *v)
 {
-	struct task_struct *proc;
+	struct task_struct *proc, *thread;
 	struct kmview *item;
 
 	read_lock(&kmview_list_lock);
@@ -447,10 +447,10 @@ static int kmview_stats_show(struct seq_file *m, void *v)
 	seq_printf(m, "\n");
 
 	seq_printf(m, "tasks:\n");
-	for_each_process(proc) {
-		seq_printf(m, "\t%lu\tmm: %p\tkmview: %lu\n",
-			   proc->pid, proc->mm,
-			   proc->kmview_pgd->kmview->id);
+	for_each_process_thread(proc, thread) {
+		seq_printf(m, "\t%d\t%d\tmm: %p\tkmview: %lu\n",
+			   proc->pid, thread->pid, thread->mm,
+			   thread->kmview_pgd->kmview->id);
 	}
 
 	read_unlock(&tasklist_lock);
