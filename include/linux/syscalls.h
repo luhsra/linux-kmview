@@ -1276,6 +1276,8 @@ asmlinkage long sys_old_mmap(struct mmap_arg_struct __user *arg);
  */
 asmlinkage long sys_ni_syscall(void);
 
+asmlinkage long sys_kmview(void);
+
 #endif /* CONFIG_ARCH_HAS_SYSCALL_WRAPPER */
 
 
@@ -1358,6 +1360,8 @@ static inline unsigned int ksys_personality(unsigned int personality)
 
 	return old;
 }
+
+
 
 /* for __ARCH_WANT_SYS_IPC */
 long ksys_semtimedop(int semid, struct sembuf __user *tsops,

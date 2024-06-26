@@ -1,3 +1,4 @@
+#include <linux/syscalls.h>
 #include <linux/pgtable.h>
 #include <linux/vmalloc.h>
 #include <linux/mmap_lock.h>
@@ -18,10 +19,8 @@
 	printk(KERN_INFO "DBGEXP: " __FILE__ ":%d [%s]: [%s] " #exp ": " \
 	       fmt "\n", __LINE__, __func__, #fmt, exp)
 
-extern u8 _text;
-extern u8 _etext;
-#define TEXT_START ((unsigned long)(&_text))
-#define TEXT_END ((unsigned long)(&_etext))
+#define TEXT_START ((unsigned long)(_text))
+#define TEXT_END ((unsigned long)(_etext))
 
 struct kmview init_kmview = {
 	.id = 0,
@@ -541,3 +540,34 @@ static int __init kmview_switch_pid_init(void) {
 }
 
 subsys_initcall(kmview_switch_pid_init);
+
+
+SYSCALL_DEFINE0(kmview)
+{
+	struct kmview *kmview, *old_kmview;
+	struct kmview_pgd *kmview_pgd_current;
+	unsigned long flags;
+
+	/* Create a new kmview */
+	kmview = kmview_create();
+	if (!kmview)
+		return -ENOMEM;
+
+	kmview_get(kmview);
+
+	kmview_pgd_current = mm_get_kmview_pgd(current->mm, kmview);
+	if (!kmview_pgd_current)
+		return -ENOMEM;
+
+	local_irq_save(flags);
+	lockdep_assert_irqs_disabled();
+	old_kmview = current->kmview_pgd->kmview;
+	current->kmview_pgd = kmview_pgd_current;
+	switch_mm_irqs_off(current->mm, current->mm, old_kmview,
+			   kmview_pgd_current, current);
+	local_irq_restore(flags);
+
+	printk(KERN_INFO "kmview: Switched to kmview %lu\n", kmview->id);
+
+	return 0;
+}

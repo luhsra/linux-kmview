@@ -479,3 +479,6 @@ COND_SYSCALL(setuid16);
 
 /* restartable sequence */
 COND_SYSCALL(rseq);
+
+/* kmview */
+COND_SYSCALL(kmview);
