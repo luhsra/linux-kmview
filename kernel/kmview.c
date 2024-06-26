@@ -14,6 +14,7 @@
 #include <asm/text-patching.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/mmu_context.h>
 
 #define dbgexp(fmt, exp)						\
 	printk(KERN_INFO "DBGEXP: " __FILE__ ":%d [%s]: [%s] " #exp ": " \
@@ -398,36 +399,6 @@ struct page *kmview_vmalloc_to_page(struct kmview *kmview,
 	return page;
 }
 
-/* The kmview must not be used anywhere! */
-static void patch_something(struct kmview *kmview) {
-	extern char ksys_write; /* this is the thing to patch */
-
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *ptep, pte;
-	struct page *page;
-	char *page_addr;
-	unsigned long addr = (unsigned long)(&ksys_write);
-
-	pud = kmview->pud + pud_index(addr);
-	pmd = pmd_offset(pud, addr);
-	BUG_ON(pmd_none(*pmd));
-	if (pmd_leaf(*pmd)) {
-		page = pmd_page(*pmd) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
-	} else {
-		ptep = pte_offset_map(pmd, addr);
-		pte = *ptep;
-		BUG_ON(!pte_present(pte));
-		page = pte_page(pte);
-		pte_unmap(ptep);
-	}
-	page_addr = page_address(page);
-
-	mutex_lock(&text_mutex);
-	page_addr[addr & ~PAGE_MASK] = 0xcc; /* Write int3 */
-	mutex_unlock(&text_mutex);
-}
-
 static struct proc_dir_entry* kmview_stats_file;
 
 static int kmview_stats_show(struct seq_file *m, void *v)
@@ -441,7 +412,7 @@ static int kmview_stats_show(struct seq_file *m, void *v)
 	seq_printf(m, "kmviews:\n");
 	BUG_ON(list_empty(&kmview_list));
 	list_for_each_entry(item, &kmview_list, list) {
-		seq_printf(m, "\t%lu\tusers:%lu\n",
+		seq_printf(m, "\t%lu\tusers:%d\n",
 			   item->id, atomic_read(&item->users));
 	}
 	seq_printf(m, "\n");
