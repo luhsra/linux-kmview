@@ -277,6 +277,7 @@ static inline void free_pud_range(struct mmu_gather *tlb, p4d_t *p4d,
 	pud_t *pud;
 	unsigned long next;
 	unsigned long start;
+	struct kmview_pgd *kmview_pgd = NULL;
 
 	start = addr;
 	pud = pud_offset(p4d, addr);
@@ -300,6 +301,11 @@ static inline void free_pud_range(struct mmu_gather *tlb, p4d_t *p4d,
 
 	pud = pud_offset(p4d, start);
 	p4d_clear(p4d);
+	list_for_each_entry(kmview_pgd, &tlb->mm->kmview_pgds, list) {
+		pgd_t *kmv_pgd = pgd_offset_pgd(kmview_pgd->pgd, start);
+		p4d_t *kmv_p4d = p4d_offset(kmv_pgd, start);
+		p4d_clear(kmv_p4d);
+	}
 	pud_free_tlb(tlb, pud, start);
 	mm_dec_nr_puds(tlb->mm);
 }
@@ -4958,6 +4964,22 @@ unlock:
 	return 0;
 }
 
+static void kmview_sync_pud(struct mm_struct *mm, p4d_t *p4d, pud_t *pud,
+			    unsigned long address)
+{
+	pgd_t *pgd_kmview;
+	p4d_t *p4d_kmview;
+
+	if (current->mm != mm || current->kmview_pgd->pgd == mm->pgd)
+		return;
+
+	// FIXME: Currently: Assume folded p4d -- only 4-level
+	pgd_kmview = pgd_offset_pgd(current->kmview_pgd->pgd, address);
+	p4d_kmview = p4d_offset(pgd_kmview, address);
+	if (p4d_none(*p4d_kmview))
+		p4d_populate(mm, p4d_kmview, pud);
+}
+
 /*
  * By the time we get here, we already hold the mm semaphore
  *
@@ -4989,6 +5011,7 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 	vmf.pud = pud_alloc(mm, p4d, address);
 	if (!vmf.pud)
 		return VM_FAULT_OOM;
+	kmview_sync_pud(mm, p4d, vmf.pud, address);
 retry_pud:
 	if (pud_none(*vmf.pud) &&
 	    hugepage_vma_check(vma, vm_flags, false, true)) {
